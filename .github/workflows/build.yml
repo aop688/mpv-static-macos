@@ -32,6 +32,7 @@ jobs:
             --arch=arm64 \
             --enable-static \
             --disable-shared \
+            --disable-avdevice \
             --disable-doc \
             --enable-gpl \
             --enable-nonfree \
