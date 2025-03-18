@@ -1,0 +1,108 @@
+name: Build and Release mpv for macOS ARM
+
+# 触发条件：推送到 main 分支或手动触发
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-mpv-arm:
+    runs-on: macos-latest # macos-latest 默认支持 Apple Silicon
+    steps:
+      # 1. 检出代码
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # 2. 安装 Homebrew 和基本工具
+      - name: Install Homebrew and Tools
+        run: |
+          /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+          brew update
+          brew install git meson ninja pkg-config
+
+      # 3. 编译静态 FFmpeg（针对 ARM）
+      - name: Build Static FFmpeg for ARM
+        run: |
+          git clone https://github.com/FFmpeg/FFmpeg.git ffmpeg
+          cd ffmpeg
+          ./configure \
+            --prefix=/usr/local \
+            --arch=arm64 \
+            --enable-static \
+            --disable-shared \
+            --disable-doc \
+            --enable-gpl \
+            --enable-nonfree \
+            --target-os=darwin \
+            --cc="clang -arch arm64" \
+            --extra-ldflags="-arch arm64"
+          make -j$(sysctl -n hw.ncpu)
+          sudo make install
+          cd ..
+
+      # 4. 编译静态 libass（针对 ARM）
+      - name: Build Static libass for ARM
+        run: |
+          git clone https://github.com/libass/libass.git
+          cd libass
+          ./configure \
+            --prefix=/usr/local \
+            --arch=arm64 \
+            --enable-static \
+            --disable-shared \
+            --host=aarch64-apple-darwin \
+            --with-pic
+          make -j$(sysctl -n hw.ncpu)
+          sudo make install
+          cd ..
+
+      # 5. 克隆 mpv 源代码并编译（针对 ARM）
+      - name: Build mpv for ARM
+        run: |
+          git clone https://github.com/mpv-player/mpv.git
+          cd mpv
+          meson setup build \
+            -Ddefault_library=static \
+            -Dlibmpv=true \
+            -Dc_link_args="-arch arm64 -static" \
+            -Dffmpeg=enabled \
+            -Dlibass=enabled \
+            --buildtype=release \
+            --cross-file=<(echo -e "[binaries]\nc = 'clang -arch arm64'\n") \
+            --native-file=<(echo -e "[properties]\nneeds_exe_wrapper = false")
+          meson compile -C build
+
+      # 6. 验证二进制文件
+      - name: Verify Binary
+        run: |
+          cd mpv/build
+          ./mpv --version
+          otool -L mpv
+          lipo -info mpv # 确认架构为 arm64
+
+      # 7. 打包二进制文件
+      - name: Package Binary
+        run: |
+          cd mpv/build
+          tar -czvf mpv-macos-arm64-static.tar.gz mpv
+
+      # 8. 上传构建产物
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mpv-macos-arm64-static
+          path: mpv/build/mpv-macos-arm64-static.tar.gz
+
+      # 9. 创建 Release 并上传二进制文件
+      - name: Create Release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ github.run_number }}"
+          name: "mpv macOS ARM64 Static Build ${{ github.run_number }}"
+          body: "Static build of mpv for macOS ARM64 (Apple Silicon), compiled on ${{ github.event.head_commit.timestamp }}."
+          files: mpv/build/mpv-macos-arm64-static.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
